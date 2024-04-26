@@ -2,8 +2,14 @@
 
 import torch
 import torch.nn.functional as F
-from torch import nn, optim
 import pytorch_lightning as pl 
+from torch import Tensor, nn, optim
+
+from utils import generate_square_subsequent_mask
+
+CONTEXT_TYPE_KEY = "type"
+GENERATION_TYPE = "gen"
+INFERENCE_TYPE = "inf"
 
 
 class SparseFF(nn.Module):
@@ -22,11 +28,17 @@ class SparseFF(nn.Module):
 
         self.controller = nn.Sequential(
             nn.Linear(d_model, low_rank),
-            nn.ReLU(), # !!!
+            nn.ReLU(), # additional relu in controller that seems to help torch in optimization
             nn.Linear(low_rank, d_hidden)
-        )
+        )        
 
-    def forward(self, x):
+    def forward(self, x:Tensor) -> Tensor:
+        """Training FF step that masks weights by setting them to 0
+        Faster for batch/series (B, T) processing
+
+        :param Tensor x: input tensor
+        :return Tensor: output tensor
+        """        
         B, T, C = x.shape
         ch = self.controller(x)
         ch = ch.reshape((self.sparsity*B*T, -1))
@@ -40,7 +52,13 @@ class SparseFF(nn.Module):
         h = h.reshape(B, T, -1)
         return h
     
-    def forward_gen(self, x):
+    def forward_gen(self, x:Tensor) -> Tensor:
+        """Validation FF step that masks weights by setting them to 0 and uses argmax
+        Faster for batch/series (B, T) processing without gumbler distribution
+
+        :param Tensor x: input tensor
+        :return Tensor: output tensor
+        """      
         B, T, C = x.shape
         ch = self.controller(x)
         ch = ch.reshape((self.sparsity*B*T, -1))
@@ -56,7 +74,13 @@ class SparseFF(nn.Module):
         h = h.reshape(B, T, -1)
         return h
 
-    def forward_inf(self, x):
+    def forward_inf(self, x:Tensor) -> Tensor:
+        """Inference FF step that selects/trimms weights for computation 
+        Faster for one batch and series (B = 1, T = 1) processing
+
+        :param Tensor x: input tensor
+        :return Tensor: output tensor
+        """      
         B, T, C = x.shape
         sample = x[0]
         ch = self.controller(sample)
@@ -82,14 +106,7 @@ class SparseFF(nn.Module):
 
         return h.reshape(B, T, -1)
 
-
-def generate_square_subsequent_mask(sz):
-    mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
-    mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
-    return mask
-
-class EncoderBlock(nn.Module):
-
+class DecoderBlock(nn.Module):
     def __init__(self, n_embd, n_head, block_size, dropout, low_rank, sparsity):
         super().__init__()
         self.block_size = block_size
@@ -99,25 +116,28 @@ class EncoderBlock(nn.Module):
         self.ln2 = nn.LayerNorm(n_embd)
 
         self.register_buffer('attn_mask', generate_square_subsequent_mask(self.block_size))
-    
-    def forward(self, x):
-        if issubclass(type(x), tuple):
-            x = x[0]
+
+    def forward(self, input:tuple[Tensor, dict]):
+        if issubclass(type(input), tuple):
+            x = input[0]
+            context = input[1]
+
             h = self.ln1(x)
-            attn_output, attn_output_weights = self.sa.forward(h, h, h, attn_mask=self.attn_mask)
+            attn_output, _ = self.sa.forward(h, h, h, attn_mask=self.attn_mask)
             x = x + attn_output
-            x = x + self.ffwd.forward_gen(self.ln2(x))
-            return (x,)
-        elif issubclass(type(x), list):
-            x = x[0]
-            h = self.ln1(x)
-            attn_output, attn_output_weights = self.sa.forward(h, h, h, attn_mask=self.attn_mask)
-            x = x + attn_output
-            x = x + self.ffwd.forward_inf(self.ln2(x))
-            return [x,]
+
+            if context[CONTEXT_TYPE_KEY] == GENERATION_TYPE:
+                x = x + self.ffwd.forward_gen(self.ln2(x))
+            elif context[CONTEXT_TYPE_KEY] == INFERENCE_TYPE:
+                x = x + self.ffwd.forward_inf(self.ln2(x))
+            else:
+                raise Exception(f"Wrong context: {context}")
+            
+            return (x, context)
         else:
+            x = input
             h = self.ln1(x)
-            attn_output, attn_output_weights = self.sa.forward(h, h, h, attn_mask=self.attn_mask)
+            attn_output, _ = self.sa.forward(h, h, h, attn_mask=self.attn_mask)
             x = x + attn_output
             x = x + self.ffwd(self.ln2(x))
             return x
@@ -133,7 +153,7 @@ class EBSTransformerModel(pl.LightningModule):
 
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
-        self.blocks = nn.Sequential(*[EncoderBlock(n_embd, n_head, block_size, dropout, self.low_rank, self.sparsity) for _ in range(n_layer)])
+        self.blocks = nn.Sequential(*[DecoderBlock(n_embd, n_head, block_size, dropout, self.low_rank, self.sparsity) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd) # final layer norm
         self.lm_head = nn.Linear(n_embd, vocab_size)
         
@@ -155,17 +175,17 @@ class EBSTransformerModel(pl.LightningModule):
         tok_emb = self.token_embedding_table(inputs)
         pos_emb = self.position_embedding_table(torch.arange(T, device=self.device))
         x = tok_emb + pos_emb
-        x = self.blocks((x,))[0]
+        x = self.blocks((x,{CONTEXT_TYPE_KEY:GENERATION_TYPE}))[0]
         x = self.ln_f(x)
         logits = self.lm_head(x)
         return logits
     
-    def forward_inf(self, inputs):
+    def _forward_inf(self, inputs):
         B, T = inputs.shape
         tok_emb = self.token_embedding_table(inputs)
         pos_emb = self.position_embedding_table(torch.arange(T, device=self.device))
         x = tok_emb + pos_emb
-        x = self.blocks([x,])[0]
+        x = self.blocks((x,{CONTEXT_TYPE_KEY:INFERENCE_TYPE}))[0]
         x = self.ln_f(x)
         logits = self.lm_head(x)
         return logits
@@ -206,12 +226,12 @@ class EBSTransformerModel(pl.LightningModule):
         return loss
 
     def test_step(self, batch, batch_idx):
-        loss, pred, Y = self._common_step(batch, batch_idx)
+        loss, pred, Y = self._validation_step(batch, batch_idx)
         self.log_dict({'test_loss': loss})
         return loss
 
     def predict_step(self, x):
-        scores = self.forward_inf(x)
+        scores = self._forward_inf(x)
         preds = torch.argmax(scores, dim=2)
         return preds
     

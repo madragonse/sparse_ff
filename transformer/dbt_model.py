@@ -37,7 +37,7 @@ def generate_square_subsequent_mask(sz):
     mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
     return mask
 
-class EncoderBlock(nn.Module):
+class DecoderBlock(nn.Module):
     """ Transformer block: communication followed by computation """
 
     def __init__(self, n_embd, n_head, block_size, dropout):
@@ -67,7 +67,7 @@ class EBTransformerModel(pl.LightningModule):
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
-        self.blocks = nn.Sequential(*[EncoderBlock(n_embd, n_head, block_size, dropout) for _ in range(n_layer)])
+        self.blocks = nn.Sequential(*[DecoderBlock(n_embd, n_head, block_size, dropout) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd) # final layer norm
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
