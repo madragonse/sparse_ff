@@ -58,7 +58,7 @@ class DecoderBlock(nn.Module):
         x = x + self.ffwd(self.ln2(x))
         return x
     
-class EBTransformerModel(pl.LightningModule):
+class DBTransformerModel(pl.LightningModule):
     def __init__(self, vocab_size, n_embd, block_size, n_head, dropout, n_layer, learning_rate, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.lr = learning_rate

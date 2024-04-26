@@ -13,6 +13,11 @@ INFERENCE_TYPE = "inf"
 
 
 class SparseFF(nn.Module):
+    """Sparse feed forward module that utilizes trainable controller and gumbler softmax for selecting weights
+
+    References:
+        - For more information, see "Sparse is Enough in Scaling Transformers" by Sebastian Jaszczur etal.,
+    """    
     def __init__(self, d_model, d_hidden=None, low_rank=2, sparsity=1):
         super().__init__()
         self.d_model = d_model
@@ -143,7 +148,7 @@ class DecoderBlock(nn.Module):
             return x
     
 
-class EBSTransformerModel(pl.LightningModule):
+class DBSTransformerModel(pl.LightningModule):
     def __init__(self, vocab_size, n_embd, block_size, n_head, dropout, n_layer, learning_rate, sparsity, low_rank) -> None:
         super().__init__()
 
