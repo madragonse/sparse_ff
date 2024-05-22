@@ -2,19 +2,11 @@
 
 from typing import Any
 import torch
-import torch.nn.functional as F
-import torchvision.datasets as datasets
-import torchvision.transforms as transforms
 from torch import nn, optim
-from torch.utils.data import DataLoader
-from tqdm import tqdm
 from torch.utils.data import random_split
 import pytorch_lightning as pl 
-import torchmetrics 
-from torchmetrics import Metric
-from torch import Tensor
-import torchvision
 
+from utils import generate_square_subsequent_mask
 
 class FeedFoward(nn.Module):
     """ a simple linear layer followed by a non-linearity """
@@ -30,12 +22,6 @@ class FeedFoward(nn.Module):
     def forward(self, x):
         return self.net(x)
     
-
-def generate_square_subsequent_mask(sz):
-    """Generate a mask to prevent attention to future positions."""
-    mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
-    mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
-    return mask
 
 class DecoderBlock(nn.Module):
     """ Transformer block: communication followed by computation """

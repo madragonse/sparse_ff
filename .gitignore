@@ -17,6 +17,7 @@ runs
 lightning_logs
 tb_logs
 models_save
+_test*
 
 
 ## PyTorch
