@@ -87,10 +87,11 @@ class SparseFF(nn.Module):
         :return Tensor: output tensor
         """      
         B, T, C = x.shape
-        sample = x[0]
-        ch = self.controller(sample)
-        ch = ch.reshape((self.sparsity*B*T, -1))
-        c = torch.argmax(ch, dim=-1)
+        
+        # sample = x[0]
+        ch = self.controller(x)
+        ch = ch.reshape((self.sparsity*B*T, -1)) # sparsity*B*T
+        c = torch.argmax(ch, dim=-1) 
 
         w1 = self.l1.weight
         s1, s2 = w1.shape
@@ -98,7 +99,9 @@ class SparseFF(nn.Module):
         rb = self.l1.bias.reshape(self.sparsity, -1)
         a = torch.arange(self.sparsity)
         x_range = torch.cat([a for _ in range(T)])
-        h = sample @ rw[x_range, c].reshape(-1, s2).T\
+        print(ch.shape)#dev
+        raise Exception("ok")
+        h = x @ rw[x_range, c].reshape(-1, s2).T\
             + rb[x_range, c].reshape(-1)
 
         h = self.act1(h)
@@ -112,24 +115,30 @@ class SparseFF(nn.Module):
         return h.reshape(B, T, -1)
 
 class DecoderBlock(nn.Module):
-    def __init__(self, n_embd, n_head, block_size, dropout, low_rank, sparsity):
+    def __init__(self, n_embd, n_head, max_block_size, dropout, low_rank, sparsity):
         super().__init__()
-        self.block_size = block_size
+        self.max_block_size = max_block_size
         self.sa = nn.MultiheadAttention(n_embd, n_head, dropout, batch_first=True)
         self.ffwd = SparseFF(n_embd, n_embd*4, low_rank, sparsity)
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
 
-        self.register_buffer('attn_mask', generate_square_subsequent_mask(self.block_size))
+        self.register_buffer('attn_mask', generate_square_subsequent_mask(self.max_block_size))
+
+    def _forward_self_attention(self, h):
+        B, T, D = h.shape
+        attn_output, _ = self.sa.forward(h, h, h, attn_mask=self.attn_mask[:T, :T])
+        return attn_output
 
     def forward(self, input:tuple[Tensor, dict]):
         if issubclass(type(input), tuple):
             x = input[0]
             context = input[1]
-
             h = self.ln1(x)
-            attn_output, _ = self.sa.forward(h, h, h, attn_mask=self.attn_mask)
-            x = x + attn_output
+            
+            attn_output = self._forward_self_attention(h)
+            
+            x = x + attn_output # dev highway
 
             if context[CONTEXT_TYPE_KEY] == GENERATION_TYPE:
                 x = x + self.ffwd.forward_gen(self.ln2(x))
@@ -142,7 +151,7 @@ class DecoderBlock(nn.Module):
         else:
             x = input
             h = self.ln1(x)
-            attn_output, _ = self.sa.forward(h, h, h, attn_mask=self.attn_mask)
+            attn_output = self._forward_self_attention(h)
             x = x + attn_output
             x = x + self.ffwd(self.ln2(x))
             return x
@@ -187,6 +196,7 @@ class DBSTransformerModel(pl.LightningModule):
     
     def _forward_inf(self, inputs):
         B, T = inputs.shape
+        # assert B == 1 # dev currently only no batch
         tok_emb = self.token_embedding_table(inputs)
         pos_emb = self.position_embedding_table(torch.arange(T, device=self.device))
         x = tok_emb + pos_emb

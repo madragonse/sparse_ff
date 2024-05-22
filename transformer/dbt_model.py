@@ -37,9 +37,14 @@ class DecoderBlock(nn.Module):
 
         self.register_buffer('attn_mask', generate_square_subsequent_mask(self.block_size))
     
+    def _forward_self_attention(self, h):
+        B, T, D = h.shape
+        attn_output, _ = self.sa.forward(h, h, h, attn_mask=self.attn_mask[:T, :T])
+        return attn_output
+
     def forward(self, x):
         h = self.ln1(x)
-        attn_output, attn_output_weights = self.sa.forward(h, h, h, attn_mask=self.attn_mask) # 
+        attn_output = self._forward_self_attention(h) # 
         x = x + attn_output
         x = x + self.ffwd(self.ln2(x))
         return x
@@ -50,7 +55,6 @@ class DBTransformerModel(pl.LightningModule):
         self.lr = learning_rate
 
         super().__init__()
-        # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
         self.blocks = nn.Sequential(*[DecoderBlock(n_embd, n_head, block_size, dropout) for _ in range(n_layer)])
@@ -106,7 +110,7 @@ class DBTransformerModel(pl.LightningModule):
 
     def predict_step(self, x):
         scores = self.forward(x)
-        preds = torch.argmax(scores, dim=1)
+        preds = torch.argmax(scores, dim=2)
         return preds
     
     def configure_optimizers(self):
