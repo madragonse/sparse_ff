@@ -88,9 +88,11 @@ class SparseFF(nn.Module):
         """      
         B, T, C = x.shape
         
-        # sample = x[0]
+        x = x.reshape([B*T, C])
+        LB = B*T
+
         ch = self.controller(x)
-        ch = ch.reshape((self.sparsity*B*T, -1)) # sparsity*B*T
+        ch = ch.reshape((self.sparsity*LB, -1)) # sparsity*B*T
         c = torch.argmax(ch, dim=-1) 
 
         w1 = self.l1.weight
@@ -98,20 +100,21 @@ class SparseFF(nn.Module):
         rw = w1.reshape(self.sparsity, -1, s2)
         rb = self.l1.bias.reshape(self.sparsity, -1)
         a = torch.arange(self.sparsity)
-        x_range = torch.cat([a for _ in range(T)])
-        print(ch.shape)#dev
-        raise Exception("ok")
-        h = x @ rw[x_range, c].reshape(-1, s2).T\
-            + rb[x_range, c].reshape(-1)
+        x_range = torch.cat([a for _ in range(LB)])
 
+        h = (x.unsqueeze(-2) @ rw[x_range, c].reshape(LB, -1, s2).mT).squeeze(-2)\
+            + rb[x_range, c].reshape([LB, self.sparsity])
+        
         h = self.act1(h)
 
         w2 = self.l2.weight.T
         s1, s2 = w2.shape
-        rw = w2.reshape(self.sparsity, -1, s2)
-        h = h @ rw[x_range, c].reshape(-1, s2)\
-            + self.l2.bias
 
+        rw = w2.reshape(self.sparsity, -1, s2)
+
+        h = h.unsqueeze(-2) @ rw[x_range, c].reshape(LB, -1, s2)\
+            + self.l2.bias
+        
         return h.reshape(B, T, -1)
 
 class DecoderBlock(nn.Module):
